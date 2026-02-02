@@ -1,0 +1,29 @@
+# Project Configuration
+
+# Data
+data:
+  raw_path: "data/raw"
+  processed_path: "data/processed"
+  
+# Model
+model:
+  type: "xgboost"  # xgboost, lightgbm, logistic_regression
+  test_size: 0.2
+  random_state: 42
+  
+# Features
+features:
+  rolling_windows: [3, 5, 10]  # Game windows for rolling averages
+  include_goalie_stats: true
+  include_opponent_strength: true
+  include_rest_days: true
+  
+# Evaluation
+evaluation:
+  metrics: ["accuracy", "auc", "precision", "recall", "f1"]
+  cv_folds: 5
+  
+# APIs
+apis:
+  nhl_api: "https://statsapi.web.nhl.com/api/v1"
+  espn_api: "https://site.api.espn.com/v2/site/sports/hockey/nhl"
