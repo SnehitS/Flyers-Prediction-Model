@@ -101,13 +101,45 @@ def flatten_features(features: Dict[str, Any], outcome: Dict[str, Any]) -> Dict[
     home_stats = features.get("home_team_stats", {})
     away_stats = features.get("away_team_stats", {})
     
-    # Extract simple numeric stats if available
-    if isinstance(home_stats, dict):
-        flat["home_wins"] = home_stats.get("wins")
-        flat["home_losses"] = home_stats.get("losses")
-    if isinstance(away_stats, dict):
-        flat["away_wins"] = away_stats.get("wins")
-        flat["away_losses"] = away_stats.get("losses")
+    def _extract_team_numbers(stats: Dict[str, Any]) -> Dict[str, Any]:
+        # Try several common key locations for numeric stats
+        out = {"wins": None, "losses": None, "home_wins": None, "home_losses": None, "away_wins": None, "away_losses": None}
+        if not isinstance(stats, dict):
+            return out
+
+        # top-level keys
+        for k in ["wins", "losses", "homeWins", "homeLosses", "roadWins", "roadLosses", "points"]:
+            v = stats.get(k)
+            if v is not None:
+                if k == "wins":
+                    out["wins"] = v
+                elif k == "losses":
+                    out["losses"] = v
+                elif k == "homeWins":
+                    out["home_wins"] = v
+                elif k == "homeLosses":
+                    out["home_losses"] = v
+                elif k == "roadWins":
+                    out["away_wins"] = v
+                elif k == "roadLosses":
+                    out["away_losses"] = v
+
+        # common nested locations
+        for nest in ["team", "teamRecord", "leagueRecord", "record"]:
+            n = stats.get(nest)
+            if isinstance(n, dict):
+                for k, dest in [("wins","wins"),("losses","losses"),("homeWins","home_wins"),("homeLosses","home_losses"),("roadWins","away_wins"),("roadLosses","away_losses")]:
+                    if out.get(dest) is None and n.get(k) is not None:
+                        out[dest] = n.get(k)
+
+        return out
+
+    hnums = _extract_team_numbers(home_stats)
+    anums = _extract_team_numbers(away_stats)
+    flat["home_wins"] = hnums.get("wins") if hnums.get("home_wins") is None else hnums.get("home_wins")
+    flat["home_losses"] = hnums.get("losses") if hnums.get("home_losses") is None else hnums.get("home_losses")
+    flat["away_wins"] = anums.get("wins") if anums.get("away_wins") is None else anums.get("away_wins")
+    flat["away_losses"] = anums.get("losses") if anums.get("away_losses") is None else anums.get("away_losses")
     
     # Recent form
     home_form = features.get("home_recent_form", {})

@@ -22,10 +22,23 @@ logger = logging.getLogger(__name__)
 # Initialize NHL API client
 nhl_client = NHLClient()
 
+# Team ID to abbreviation mapping (common NHL teams)
+TEAM_ID_TO_ABBR = {
+    1: "NJD", 2: "NYI", 3: "NYR", 4: "PHI", 5: "PIT", 6: "BOS", 7: "BUF", 8: "MTL",
+    9: "OTT", 10: "TOR", 11: "WSH", 12: "CAR", 13: "FLA", 14: "TB", 15: "DET",
+    16: "NSH", 17: "STL", 18: "CHI", 19: "MIN", 20: "WPG", 21: "DAL", 22: "LAK",
+    23: "ANA", 24: "SJS", 25: "VAN", 26: "EDM", 27: "CGY", 28: "VEG", 29: "SEA"
+}
+
 
 def _format_season(season: int) -> str:
     """Return NHL season string like '20252026' for season year 2025."""
     return f"{season}{season+1}"
+
+
+def _get_team_abbr(team_id: int) -> Optional[str]:
+    """Convert team_id to NHL team abbreviation. Returns None if not found."""
+    return TEAM_ID_TO_ABBR.get(team_id)
 
 
 def fetch_schedule(start_date: Optional[date] = None,
@@ -67,12 +80,52 @@ def fetch_upcoming_games(days: int = 7) -> List[Dict[str, Any]]:
 def fetch_team_stats(team_id: int, season: Optional[int] = None) -> Dict[str, Any]:
     """Fetch team statistics (season-level) using nhlpy."""
     try:
-        team_data = nhl_client.teams.teams()
-        if not team_data or 'teams' not in team_data:
+        # Get team abbreviation (e.g., 'PHI' for team_id 4)
+        team_abbr = _get_team_abbr(team_id)
+        if not team_abbr:
+            logger.warning("Unknown team_id %s, returning empty stats", team_id)
             return {}
-        # Find team by ID
-        team_info = next((t for t in team_data['teams'] if t.get('id') == team_id), None)
-        return team_info or {}
+
+        result: Dict[str, Any] = {}
+
+        # Fetch standings which contains all team stats
+        standings_data = fetch_standings()
+        
+        # Extract standings list
+        standings_list = []
+        if standings_data:
+            if isinstance(standings_data, dict) and 'standings' in standings_data:
+                standings_list = standings_data['standings']
+            elif isinstance(standings_data, list):
+                standings_list = standings_data
+        
+        # Find the record for this team by matching teamAbbrev
+        if standings_list:
+            for rec in standings_list:
+                if isinstance(rec, dict):
+                    # teamAbbrev might be a dict or string
+                    rec_abbrev = rec.get('teamAbbrev', '')
+                    if isinstance(rec_abbrev, dict):
+                        rec_abbrev = rec_abbrev.get('default', '')
+                    rec_abbrev = str(rec_abbrev).upper()
+                    
+                    if rec_abbrev == team_abbr.upper():
+                        # Extract numeric stats from standings record
+                        result['wins'] = rec.get('wins')
+                        result['losses'] = rec.get('losses')
+                        result['home_wins'] = rec.get('homeWins')
+                        result['home_losses'] = rec.get('homeLosses')
+                        result['away_wins'] = rec.get('roadWins')
+                        result['away_losses'] = rec.get('roadLosses')
+                        result['points'] = rec.get('points')
+                        result['otLosses'] = rec.get('otLosses')
+                        # Additional useful stats
+                        result['gamesPlayed'] = rec.get('gamesPlayed')
+                        result['goalFor'] = rec.get('goalFor')
+                        result['goalAgainst'] = rec.get('goalAgainst')
+                        break
+        
+        return result
     except Exception:
         logger.exception("Error fetching team stats for %s", team_id)
         return {}
@@ -82,21 +135,41 @@ def fetch_player_stats(player_id: int, season: Optional[int] = None,
                        stats_type: str = "statsSingleSeason") -> Dict[str, Any]:
     """Fetch player stats using nhlpy."""
     try:
-        # Use skater_stats_summary or player_game_log
+        player_id_str = str(player_id)
+        if season is None:
+            season = 2025
+        season_str = _format_season(season)
+        
+        # Use player_game_log with correct signature: (player_id, season_id, game_type)
         if stats_type == "gameLog":
-            return nhl_client.stats.player_game_log(player_id=player_id) or {}
+            return nhl_client.stats.player_game_log(player_id=player_id_str, season_id=season_str, game_type=2) or {}
         else:
-            # Default to single season summary
-            return nhl_client.stats.skater_stats_summary() or {}
+            # Default to skater_stats_summary: (start_season, end_season, ...)
+            return nhl_client.stats.skater_stats_summary(start_season=season_str, end_season=season_str) or {}
     except Exception:
         logger.exception("Error fetching player stats for %s", player_id)
         return {}
 
 
 def fetch_roster_and_injuries(team_id: int, season: Optional[int] = None) -> Dict[str, Any]:
-    """Fetch roster and basic status information for a team using nhlpy."""
+    """Fetch roster and basic status information for a team using nhlpy.
+    
+    Requires team abbreviation (e.g., 'PHI') and season string (e.g., '20252026').
+    """
     try:
-        roster = nhl_client.teams.team_roster(team_id=team_id)
+        # Get team abbreviation from team_id
+        team_abbr = _get_team_abbr(team_id)
+        if not team_abbr:
+            logger.warning("Unknown team_id %s, skipping roster fetch", team_id)
+            return {}
+        
+        # Get season string (default to current)
+        if season is None:
+            season = 2025  # Current season
+        season_str = _format_season(season)
+        
+        # Call team_roster with correct signature: (team_abbr, season)
+        roster = nhl_client.teams.team_roster(team_abbr, season_str)
         return roster or {}
     except Exception:
         logger.exception("Error fetching roster for %s", team_id)
@@ -116,7 +189,8 @@ def fetch_standings(season: Optional[int] = None) -> Dict[str, Any]:
 def fetch_game_boxscore(game_pk: int) -> Dict[str, Any]:
     """Fetch boxscore for a given game primary key (gamePk) using nhlpy."""
     try:
-        boxscore = nhl_client.game_center.boxscore(game_id=game_pk)
+        # boxscore expects game_id as string
+        boxscore = nhl_client.game_center.boxscore(game_id=str(game_pk))
         return boxscore or {}
     except Exception:
         logger.exception("Error fetching boxscore for %s", game_pk)
@@ -126,11 +200,13 @@ def fetch_game_boxscore(game_pk: int) -> Dict[str, Any]:
 def fetch_edge_metrics(player_id: int) -> Dict[str, Any]:
     """Fetch EDGE metrics (shot speed, skating speed) for players using nhlpy."""
     try:
+        # Convert player_id to string for API call
+        player_id_str = str(player_id)
         # Try skater shot speed detail first
-        metrics = nhl_client.edge.skater_shot_speed_detail(player_id=player_id)
+        metrics = nhl_client.edge.skater_shot_speed_detail(player_id=player_id_str)
         if not metrics:
             # Fallback to general skater detail
-            metrics = nhl_client.edge.skater_detail(player_id=player_id)
+            metrics = nhl_client.edge.skater_detail(player_id=player_id_str)
         return metrics or {}
     except Exception:
         logger.exception("Error fetching EDGE metrics for %s", player_id)
@@ -178,10 +254,12 @@ def fetch_goalie_stats(team_id: int) -> Dict[str, Any]:
 def fetch_goalie_edge_metrics(goalie_id: int) -> Dict[str, Any]:
     """Fetch advanced EDGE metrics for a goalie (save %, shot location, etc.)."""
     try:
-        metrics = nhl_client.edge.goalie_save_percentage_detail(player_id=goalie_id)
+        # Convert goalie_id to string for API call
+        goalie_id_str = str(goalie_id)
+        metrics = nhl_client.edge.goalie_save_percentage_detail(player_id=goalie_id_str)
         if not metrics:
             # Fallback to general goalie detail
-            metrics = nhl_client.edge.goalie_detail(player_id=goalie_id)
+            metrics = nhl_client.edge.goalie_detail(player_id=goalie_id_str)
         return metrics or {}
     except Exception:
         logger.exception("Error fetching goalie EDGE metrics for %s", goalie_id)
