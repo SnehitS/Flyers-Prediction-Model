@@ -224,7 +224,7 @@ if __name__ == "__main__":
     # Build dataset for 2024-2025 season (historical games)
     # Adjust dates as needed - starting from earlier in season for more data
     start = date(2024, 10, 1)  # Start of 2024-25 season
-    end = date(2026, 2, 3)      # Up to today
+    end = date(2026, 2, 4)      # Up to today
     
     output = "data/processed/features.csv"
     
