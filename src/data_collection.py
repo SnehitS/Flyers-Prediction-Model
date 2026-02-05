@@ -192,28 +192,33 @@ def compute_goalie_rest(team_id: int, games: List[Dict[str, Any]]) -> Dict[int, 
     """Compute days since last game for each goalie on a team.
     
     Returns map of goalie_id -> rest_days (int).
+    Works with both schedule and boxscore response structures.
     """
     goalie_rest_map: Dict[int, int] = {}
     try:
         # Parse games to find which goalie played for this team
-        for g in sorted(games, key=lambda x: x.get("gameDate", ""), reverse=True):
-            teams = g.get("teams", {})
-            for side in ("home", "away"):
-                team_info = teams.get(side, {}).get("team", {})
-                if team_info.get("id") == team_id:
-                    # Get stats to find starting goalie
-                    stats = g.get("teams", {}).get(side, {}).get("stats", {})
-                    goalkeeping = stats.get("goalkeeping", {})
-                    # Note: goalkeeping data structure varies; often in boxscore
-                    # For now, we compute from most recent game date
-                    gd = g.get("gameDate")
-                    if gd:
-                        try:
-                            last_game_date = datetime.fromisoformat(gd.replace("Z", "+00:00")).date()
-                            # This is simplified; in practice you'd extract goalie ID from boxscore
-                            return {0: (date.today() - last_game_date).days}  # Placeholder
-                        except Exception:
-                            pass
+        for g in sorted(games, key=lambda x: x.get("gameDate", x.get("startTimeUTC", "")), reverse=True):
+            # Extract team from actual API structure (homeTeam/awayTeam)
+            home_team = g.get("homeTeam", {})
+            away_team = g.get("awayTeam", {})
+            
+            team_info = None
+            if home_team.get("id") == team_id:
+                team_info = home_team
+            elif away_team.get("id") == team_id:
+                team_info = away_team
+            
+            if team_info:
+                # Get gameDate (boxscore) or startTimeUTC (schedule)
+                gd = g.get("gameDate") or g.get("startTimeUTC", "").split("T")[0]
+                if gd:
+                    try:
+                        last_game_date = datetime.fromisoformat(gd.replace("Z", "+00:00")).date()
+                        # Simplified: return rest days for team (not per-goalie)
+                        # In practice, you'd extract goalie ID from boxscore
+                        return {0: (date.today() - last_game_date).days}  # Placeholder
+                    except Exception:
+                        pass
         return {}
     except Exception:
         logger.exception("Error computing goalie rest for team %s", team_id)
@@ -250,20 +255,28 @@ def compute_rest_days(games: List[Dict[str, Any]]) -> Dict[int, int]:
 
     Returns a map team_id -> rest_days (int). Assumes `games` includes
     past games with 'gameDate' and team information.
+    Works with both schedule and boxscore response structures.
     """
     rows = []
     for g in games:
-        gd = g.get("gameDate")
+        # Handle both gameDate (boxscore) and startTimeUTC (schedule)
+        gd = g.get("gameDate") or g.get("startTimeUTC", "").split("T")[0]
         try:
             played = datetime.fromisoformat(gd.replace("Z", "+00:00")).date()
         except Exception:
             continue
-        teams = g.get("teams") or g.get("teams", {})
-        # modern schedule structure places teams under 'teams'
-        for side in ("home", "away"):
-            t = g.get("teams", {}).get(side, {}).get("team")
-            if t:
-                rows.append({"team_id": t.get("id"), "date": played})
+        
+        # Extract team IDs from actual API structure (homeTeam/awayTeam)
+        home_team = g.get("homeTeam", {})
+        away_team = g.get("awayTeam", {})
+        
+        home_id = home_team.get("id")
+        away_id = away_team.get("id")
+        
+        if home_id:
+            rows.append({"team_id": home_id, "date": played})
+        if away_id:
+            rows.append({"team_id": away_id, "date": played})
 
     if not rows:
         return {}
@@ -284,24 +297,30 @@ def compute_rest_days(games: List[Dict[str, Any]]) -> Dict[int, int]:
 def recent_form(team_id: int, games: List[Dict[str, Any]], window: int = 10) -> Dict[str, Any]:
     """Compute recent form (wins/losses/overtime) for a team from a games list.
 
-    Returns dict with wins, losses, ot, pct over the `window` most recent games.
+    Returns dict with wins, losses, ties, pct over the `window` most recent games.
+    Works with both schedule and boxscore response structures.
     """
     recent = []
-    for g in sorted(games, key=lambda x: x.get("gameDate", ""), reverse=True):
-        teams = g.get("teams", {})
-        home = teams.get("home", {}).get("team", {}).get("id")
-        away = teams.get("away", {}).get("team", {}).get("id")
+    for g in sorted(games, key=lambda x: x.get("gameDate", x.get("startTimeUTC", "")), reverse=True):
+        # Extract team IDs from actual API structure (homeTeam/awayTeam)
+        home_team = g.get("homeTeam", {})
+        away_team = g.get("awayTeam", {})
+        
+        home = home_team.get("id")
+        away = away_team.get("id")
+        
         if team_id not in (home, away):
             continue
-        # determine result for team
-        status = g.get("status", {}).get("abstractGameState")
-        # boxscore may give winner; try to infer from linescore if present
-        outcome = g.get("teams", {})
-        # fallback: skip games without necessary score info
-        home_score = g.get("teams", {}).get("home", {}).get("score")
-        away_score = g.get("teams", {}).get("away", {}).get("score")
+        
+        # Get scores from homeTeam/awayTeam structure
+        home_score = home_team.get("score")
+        away_score = away_team.get("score")
+        
+        # Skip games without scores (incomplete)
         if home_score is None or away_score is None:
             continue
+        
+        # Determine result for team
         if team_id == home:
             if home_score > away_score:
                 recent.append("W")
@@ -316,8 +335,10 @@ def recent_form(team_id: int, games: List[Dict[str, Any]], window: int = 10) -> 
                 recent.append("L")
             else:
                 recent.append("T")
+        
         if len(recent) >= window:
             break
+    
     wins = recent.count("W")
     losses = recent.count("L")
     ties = recent.count("T")
@@ -331,38 +352,49 @@ def assemble_features_for_game(game: Dict[str, Any], season: Optional[int] = Non
     This is a light-weight, synchronous assembly that calls the nhlpy
     endpoints for team stats, rosters, goalie stats, and computes rest and 
     recent form from available schedule information.
+    
+    Works with both schedule and boxscore response structures.
     """
     features: Dict[str, Any] = {}
     try:
-        teams = game.get("teams", {})
-        home = teams.get("home", {}).get("team", {})
-        away = teams.get("away", {}).get("team", {})
-        home_id = home.get("id")
-        away_id = away.get("id")
-        features["gamePk"] = game.get("gamePk") or game.get("gameId")
-        features["gameDate"] = game.get("gameDate")
+        # Extract team IDs from actual API structure (homeTeam/awayTeam, not nested 'teams')
+        home_team = game.get("homeTeam", {})
+        away_team = game.get("awayTeam", {})
+        
+        home_id = home_team.get("id")
+        away_id = away_team.get("id")
+        
+        # Store game metadata
+        features["gamePk"] = game.get("gamePk") or game.get("id")
+        features["gameDate"] = game.get("gameDate") or game.get("startTimeUTC", "").split("T")[0]
 
-        # fetch season-level stats
+        # Fetch season-level stats
         features["home_team_stats"] = fetch_team_stats(home_id, season)
         features["away_team_stats"] = fetch_team_stats(away_id, season)
 
-        # roster & status
+        # Roster & status
         features["home_roster"] = fetch_roster_and_injuries(home_id, season)
         features["away_roster"] = fetch_roster_and_injuries(away_id, season)
 
-        # goalie stats & metrics
+        # Goalie stats & metrics
         features["home_goalie_stats"] = fetch_goalie_stats(home_id)
         features["away_goalie_stats"] = fetch_goalie_stats(away_id)
 
-        # recent schedule (lookback 60 days) for rest and form
+        # Recent schedule (lookback 60 days) for rest and form
         game_date = None
         try:
-            game_date = datetime.fromisoformat(features["gameDate"].replace("Z", "+00:00")).date()
+            game_date_str = features.get("gameDate", "")
+            if game_date_str:
+                game_date = datetime.fromisoformat(game_date_str.replace("Z", "+00:00")).date()
+            else:
+                game_date = date.today()
         except Exception:
             game_date = date.today()
+        
         lookback_start = game_date - timedelta(days=60)
         past_games = fetch_schedule(start_date=lookback_start, end_date=game_date)
         
+        # Compute rest days and recent form
         rest_map = compute_rest_days(past_games)
         features["home_rest_days"] = rest_map.get(home_id, None)
         features["away_rest_days"] = rest_map.get(away_id, None)
@@ -370,7 +402,7 @@ def assemble_features_for_game(game: Dict[str, Any], season: Optional[int] = Non
         features["home_recent_form"] = recent_form(home_id, past_games, window=10)
         features["away_recent_form"] = recent_form(away_id, past_games, window=10)
 
-        # goalie rest and recent form
+        # Goalie rest and recent form
         goalie_rest = compute_goalie_rest(home_id, past_games)
         features["home_goalie_rest"] = goalie_rest
         goalie_rest = compute_goalie_rest(away_id, past_games)
@@ -378,7 +410,7 @@ def assemble_features_for_game(game: Dict[str, Any], season: Optional[int] = Non
 
         return features
     except Exception:
-        logger.exception("Error assembling features for game %s", game.get("gamePk"))
+        logger.exception("Error assembling features for game %s", game.get("gamePk") or game.get("id"))
         return features
 
 

@@ -31,7 +31,7 @@ def fetch_historical_games(start_date: date, end_date: date) -> List[Dict[str, A
 
 
 def extract_game_outcome(game: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract win/loss outcome from a completed game.
+    """Extract win/loss outcome from a completed game (boxscore or schedule).
     
     Returns dict with:
       - home_win: 1 if home won, 0 otherwise
@@ -47,23 +47,17 @@ def extract_game_outcome(game: Dict[str, Any]) -> Dict[str, Any]:
         "result_type": None
     }
     
-    # Check game status - only process final games
-    status = game.get("status", {}).get("abstractGameState", "")
-    if status != "Final":
-        return outcome
-    
     try:
-        # Try to get scores from game dict
-        home_score = game.get("teams", {}).get("home", {}).get("score")
-        away_score = game.get("teams", {}).get("away", {}).get("score")
+        # Check if game is complete - both schedule and boxscore use 'gameState' = 'FINAL'
+        game_state = game.get("gameState", "")
         
-        if home_score is None or away_score is None:
-            # Try fetching boxscore if scores not in schedule
-            game_pk = game.get("gamePk") or game.get("gameId")
-            if game_pk:
-                boxscore = fetch_game_boxscore(game_pk)
-                home_score = boxscore.get("teams", {}).get("home", {}).get("score")
-                away_score = boxscore.get("teams", {}).get("away", {}).get("score")
+        # Only process if marked as final
+        if game_state != "FINAL":
+            return outcome
+        
+        # Get scores from homeTeam/awayTeam (works for both schedule and boxscore)
+        home_score = game.get("homeTeam", {}).get("score")
+        away_score = game.get("awayTeam", {}).get("score")
         
         if home_score is not None and away_score is not None:
             outcome["home_score"] = int(home_score)
@@ -78,12 +72,12 @@ def extract_game_outcome(game: Dict[str, Any]) -> Dict[str, Any]:
                 outcome["away_win"] = 1
                 outcome["result_type"] = "L"
             else:
-                # Tie or overtime - assume away won (will refine with OT info)
+                # Tie - both get 0
                 outcome["home_win"] = 0
-                outcome["away_win"] = 1
-                outcome["result_type"] = "OT"
+                outcome["away_win"] = 0
+                outcome["result_type"] = "TIE"
     except Exception as e:
-        logger.warning(f"Failed to extract outcome for game {game.get('gamePk')}: {e}")
+        logger.warning(f"Failed to extract outcome for game {game.get('gamePk') or game.get('id')}: {e}")
     
     return outcome
 
@@ -167,26 +161,39 @@ def build_dataset(start_date: date, end_date: date, output_path: str) -> pd.Data
     completed_count = 0
     for i, game in enumerate(games):
         try:
+            # Resolve a game primary key for fetching boxscore (works across schedule shapes)
+            game_pk = None
+            if isinstance(game, dict):
+                game_pk = game.get("gamePk") or game.get("id") or game.get("gameId")
+            
+            # Prefer boxscore for outcome and detailed structure (more consistent)
+            boxscore = None
+            if game_pk:
+                boxscore = fetch_game_boxscore(game_pk)
+
+            # If boxscore available, use it; otherwise fall back to schedule entry
+            source_game = boxscore or game
+
             # Extract outcome first (only keep completed games)
-            outcome = extract_game_outcome(game)
+            outcome = extract_game_outcome(source_game)
             if outcome.get("home_win") is None:
                 continue  # Skip incomplete games
-            
+
             completed_count += 1
-            
-            # Assemble features
-            features = assemble_features_for_game(game)
-            
+
+            # Assemble features using the boxscore (or schedule fallback)
+            features = assemble_features_for_game(source_game)
+
             # Flatten and combine
             row = flatten_features(features, outcome)
             rows.append(row)
-            
+
             if (i + 1) % 100 == 0:
                 logger.info(f"Processed {i + 1} / {len(games)} games ({completed_count} completed)")
         except Exception as e:
             logger.warning(f"Error processing game {game.get('gamePk') if isinstance(game, dict) else 'unknown'}: {e}")
             continue
-    
+
     logger.info(f"Found {completed_count} completed games out of {len(games)} total")
     
     # Convert to DataFrame
