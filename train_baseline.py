@@ -27,13 +27,24 @@ exclude_cols = {'gamePk', 'gameDate', 'home_win', 'away_win', 'result_type', 'ho
 numeric_cols = [col for col in df.select_dtypes(include=[np.number]).columns 
                if col not in exclude_cols]
 
-X = df[numeric_cols].copy()
+# Select only features with <50% missing values
+valid_cols = [col for col in numeric_cols if df[col].isnull().sum() / len(df) < 0.5]
+X = df[valid_cols].copy()
 y = df['home_win'].copy()
 
-# Fill NaNs
+# Fill remaining NaNs with median
 for col in X.columns:
-    if X[col].isnull().any():
-        X[col].fillna(X[col].median(), inplace=True)
+    X[col].fillna(X[col].median(), inplace=True)
+
+# Verify no NaNs remain
+if X.isnull().any().any():
+    print(f"WARNING: NaN values still present in features: {X.columns[X.isnull().any()].tolist()}")
+    valid_rows = ~X.isnull().any(axis=1)
+    X = X[valid_rows]
+    y = y[valid_rows]
+
+print(f"  Features selected: {len(X.columns)}")
+print(f"  Samples: {len(X)}")
 
 # Train/test split
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
