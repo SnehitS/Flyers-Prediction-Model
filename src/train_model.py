@@ -38,10 +38,13 @@ def prepare_data(csv_path: str = "data/processed/features.csv", test_size: float
     
     print(f"After removing missing targets: {X.shape[0]} samples")
     
-    # Fill missing feature values with median
+    # Fill missing feature values with median (fallback to 0 if all NaN)
     for col in X.columns:
         if X[col].isnull().any():
-            X[col].fillna(X[col].median(), inplace=True)
+            median_val = X[col].median()
+            if pd.isna(median_val):
+                median_val = 0
+            X[col] = X[col].fillna(median_val)
     
     print(f"Missing values after filling: {X.isnull().sum().sum()}")
     
@@ -71,7 +74,7 @@ def train_logistic_regression(X_train, X_test, y_train, y_test):
     
     # Train model
     print("Training logistic regression...")
-    model = LogisticRegression(max_iter=1000, random_state=42, n_jobs=-1)
+    model = LogisticRegression(max_iter=1000, random_state=42)
     model.fit(X_train_scaled, y_train)
     
     # Predictions
